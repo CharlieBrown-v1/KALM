@@ -1,7 +1,10 @@
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from itertools import chain
 
 import numpy as np
+
+data_dir = Path(__file__).parent.parent.joinpath('data')
 
 CLEVR_QPOS_OBS_INDICES = lambda num: list(chain(*[[i*7, i*7+1] for i in range(num)]))
 

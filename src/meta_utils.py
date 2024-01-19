@@ -1183,7 +1183,7 @@ def obs_online2offline(env_name: str, online_obs: np.ndarray, return_valid_index
 
 from pathlib import Path
 num_noisy_entity = 1
-data_dir = Path('/home/yangsh/world_model_rl/llm_agent/data')
+data_dir = Path(__file__).parent.parent.joinpath('data')
 test_noisy_state_dict = np.load(data_dir.joinpath('noisy_state_test.npy'), allow_pickle=True).item()
 def obs_online2noisy_offline(env_name: str, online_obs: np.ndarray, tau_noisy_entity_list: list) -> np.ndarray:
     offline_obs = obs_online2offline(env_name=env_name, online_obs=online_obs, return_valid_index_list=False)
@@ -3234,53 +3234,7 @@ class FakeEnv:
         )
 
 
-def load_and_save_all_env_given_level():
-    import numpy as np
-    steps = [2531, 5063, 7594, 10126, 12655]
-    level_list = [
-        'rephrase_level',
-        'easy_level',
-        'hard_level',
-    ]
-    task2sr = {}
-    data_dir = '/home/yangsh/world_model_rl/llm_agent/infer_result'
-    for step in steps:
-        for level in level_list:
-            if level == 'baseline':
-                env_name_list = baseline_env_name_list.copy()
-            elif level == 'rephrase_level':
-                env_name_list = rephrase_level_env_name_list.copy()
-            elif level == 'easy_level':
-                env_name_list = easy_level_env_name_list.copy()
-            elif level == 'hard_level':
-                env_name_list = hard_level_env_name_list.copy()
-            else:
-                raise NotImplementedError
-            level_dict = {
-                "instructions": [],
-                "observations": [],
-                "actions": [],
-                "observation_masks": [],
-                "action_masks": [],
-                "rewards": [],
-                "terminals": [],
-                "successes": [],
-                "env_name": [],
-            }
-            for env_name in env_name_list:
-                env_prefix = env_prefix = env_name[:env_name.find('-v2')].replace('-', '_')
-                data_path_template = f"{data_dir}/meta_{env_prefix}_{step}.npy"
-                data = np.load(data_path_template, allow_pickle=True).item()
-                for key in data.keys():
-                    level_dict[key].extend(data[key])
-                level_dict['env_name'].extend([env_name for _ in range(len(data[key]))])
-                task2sr[env_name] = np.mean([success[-1] for success in data['successes']])
-            np.save(f'{data_dir}/meta_{level}_{step}.npy', level_dict)
-    print(f'Pass.')
-
-
 if __name__ == '__main__':
-    load_and_save_all_env_given_level()
     wrap_info = {
         'reward_shaping': True
     }

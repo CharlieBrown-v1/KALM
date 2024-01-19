@@ -63,3 +63,18 @@ python3 src/clevr_offline_train.py --ds_type rephrase_level --agent_name ${agent
 ```bash
 python3 src/meta_offline_train.py --ds_type rephrase_level --agent_name ${agent_name} --dataset_path data/meta_world.hdf5 --device ${device} --seed ${seed}
 ```
+
+## OfflineRL Testing
+1. Train an OfflineRL policy as described in the OfflineRL Training section
+2. Test the OfflineRL policy
+* CLEVR-Robot
+    1. Download the test dataset from url: https://box.nju.edu.cn/f/3eb76652b51b449d8617/?dl=1
+    2. Unzip the folder and move all the files to the `data` directory
+    3. Run the following script:
+    ```bash
+    python3 src/clevr_offline_test.py --agent_name ${agent_name} --model_path ${model_path} --device ${device} --seed ${seed}
+    ```
+* Meta-World
+```bash
+python3 src/meta_offline_test.py --agent_name ${agent_name} --model_path ${model_path} --device ${device} --seed ${seed}
+```
