@@ -8,7 +8,7 @@
 
 | <img src="assets/clevr_easy_0.gif" width="800"/> | <img src="assets/clevr_easy_1.gif" width="800"/>    |
 |  :----: | :----:  |
-| Goal: *Move the ball that has the color red to the right.* | Goal: *Can you move the purple ball backwards?* |
+| Goal: *Move the ball that has the color red to the right.* | Goal: *Could you please transfer the purple ball towards the left?* |
 
 <!-- Meta-World -->
 | <img src="assets/meta_pick_place_wall.gif" width="800"/> | <img src="assets/meta_reach_wall.gif" width="800"/>    |
