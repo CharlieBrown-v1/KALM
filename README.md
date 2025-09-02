@@ -84,3 +84,16 @@ python3 src/meta_offline_train.py --ds_type rephrase_level --agent_name ${agent_
 ```bash
 python3 src/meta_offline_test.py --agent_name ${agent_name} --model_path ${model_path} --device ${device} --seed ${seed}
 ```
+
+
+## Citations
+If you find KALM useful in your research, please consider citing the following paper:
+
+```bibtex
+@inproceedings{pang2024kalm,
+  title={KALM: Knowledgeable Agents by Offline Reinforcement Learning from Large Language Model Rollouts},
+  author={Jing-Cheng Pang and Si-Hang Yang and Kaiyuan Li and Xiong-Hui Chen and Nan Tang and Yang Yu},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2024}
+}
+```
