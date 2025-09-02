@@ -1,4 +1,10 @@
-# Knowledgeable Agents by Offline Reinforcement Learning from Large Language Model Rollouts
+# KALM: Knowledgeable Agents by Offline Reinforcement Learning from Large Language Model Rollouts
+
+![](framework.png)
+
+## News
+- **2025.05:** We have released [ImagineBench](https://arxiv.org/pdf/2505.10010), a benchmark for evaluating RL from LLM-imaginary rollouts, with more diverse tasks. 
+- **2024.09:** KALM has been accepted by NeurIPS 2024! Check out our [project page](https://kalmneurips2024.github.io) for more details.
 
 ## Python Environment Configuration
 1. Update the `prefix` parameter in `environment.yml`
@@ -6,8 +12,8 @@
 ```bash
 conda env create -f environment.yml
 ```
-
-## LLM Grounding
+## How to Run
+### LLM Grounding
 1. Download Llama-2-7b-chat-hf from https://huggingface.co/meta-llama/Llama-2-7b-chat-hf
 2. Move the downloaded Llama-2-7b-chat-hf to path `base_models/llama2-hf-chat-7b`
 3. Move the OfflineRL dataset to path `data/${offlinerl_dataset_name}`. We provide 2 toy datasets for testing: `data/clevr_robot.npy` and `data/meta_world.npy`
@@ -23,7 +29,7 @@ bash scripts/train_clevr.sh
 bash scripts/train_meta.sh
 ```
 
-## Rollout Generation
+### Rollout Generation
 1. Move the fine-tuned LLM to path `finetuned_models/${model_name}`
 2. Generate rollouts with the fine-tuned LLM
 * CLEVR-Robot
@@ -43,7 +49,7 @@ python3 src/clevr_generate.py --model_path ${model_path} --prompt_path data/clev
 python3 src/meta_generate.py --model_path ${model_path} --output_path ${output_path} --level rephrase_level
 ```
 
-## OfflineRL Training
+### OfflineRL Training
 1. Move the imaginary dataset to path `data/${imaginary_dataset_name}`
 2. Train the OfflineRL policy with the OfflineRL dataset and imaginary datast
 * CLEVR-Robot
@@ -64,7 +70,7 @@ python3 src/clevr_offline_train.py --ds_type rephrase_level --agent_name ${agent
 python3 src/meta_offline_train.py --ds_type rephrase_level --agent_name ${agent_name} --dataset_path data/meta_world.hdf5 --device ${device} --seed ${seed}
 ```
 
-## OfflineRL Testing
+### OfflineRL Testing
 1. Train an OfflineRL policy as described in the OfflineRL Training section
 2. Test the OfflineRL policy
 * CLEVR-Robot
