@@ -77,6 +77,8 @@ class LlataConfig(LlamaConfig):
 
         self.traj_start_layer = 0  # lky: add this to set where traj start
 
+        self.use_mlp = True
+
 class LlataForTrajectoryGenerationConfig(LlataConfig):
     def __init__(
         self,

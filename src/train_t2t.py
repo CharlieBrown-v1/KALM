@@ -104,6 +104,7 @@ def train_clevr():
         config.max_trajectory_length = data_args.max_traj_len
         config.traj_ln = model_args.traj_ln
     config.traj_ln = False  # manually set to False
+    config.use_mlp = custom_args.use_mlp
 
     model = Llata2ForTrajectoryGeneration.from_pretrained(model_args.pretrained_path, config=config)
     print("===> model initialized")

@@ -48,8 +48,8 @@ class LlataModel(LlamaModel):
         self.action_type = config.action_type
         self.action_dim = config.action_dim
 
-        self.embed_observation = create_embedding_layer(self.observation_type, self.observation_dim, config.hidden_size)
-        self.embed_action = create_embedding_layer(self.action_type, self.action_dim, config.hidden_size)
+        self.embed_observation = create_embedding_layer(self.observation_type, self.observation_dim, config.hidden_size, config.use_mlp)
+        self.embed_action = create_embedding_layer(self.action_type, self.action_dim, config.hidden_size, config.use_mlp)
 
         # lky waste: load pretrained observation/action embedding if specified
         # if config.do_load_embedding:
@@ -229,9 +229,10 @@ class LlataModel(LlamaModel):
         ), traj_embeds
 
 
-class LlataForTrajectoryGeneration(LlataModel):
+class LlataForTrajectoryGeneration(LlamaPreTrainedModel):
     def __init__(self, config: LlataForTrajectoryGenerationConfig):
         super().__init__(config)
+        self.model = LlataModel(config=config)
 
         self.action_loss_ratio = config.action_loss_ratio
         self.scale_loss_ratio = config.scale_loss_ratio  # add this to control scale_loss
@@ -266,7 +267,7 @@ class LlataForTrajectoryGeneration(LlataModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs, traj_embeds = super().forward(
+        outputs, traj_embeds = self.model.forward(
             inst_tokens=inst_tokens,
             observations=observations,
             actions=actions,
@@ -298,7 +299,7 @@ class LlataForTrajectoryGeneration(LlataModel):
             labels = labels.to(logits.device)
             masks = masks.to(logits.device)
 
-            obss_loss = default_sl_loss(self.observation_type, logits, labels, masks)
+            obss_loss = default_sl_loss(self.model.observation_type, logits, labels, masks)
         if action_labels is not None:
             logits = action_logits[:, :action_labels.shape[1]].contiguous()
             labels = action_labels.contiguous()
@@ -307,7 +308,7 @@ class LlataForTrajectoryGeneration(LlataModel):
             labels = labels.to(logits.device)
             masks = masks.to(logits.device)
 
-            action_loss = default_sl_loss(self.action_type, logits, labels, masks)
+            action_loss = default_sl_loss(self.model.action_type, logits, labels, masks)
         if obss_loss is not None and action_loss is not None:
             loss = (1 - self.action_loss_ratio) * obss_loss + self.action_loss_ratio * action_loss
         

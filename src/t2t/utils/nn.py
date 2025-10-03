@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 
-def create_embedding_layer(embed_type: str, ndim: int, hidden_size: int):
+def create_embedding_layer(embed_type: str, ndim: int, hidden_size: int, use_mlp: bool = True):
     if embed_type == "continuous":
         mid_size = 512
         mlp = nn.Sequential(
@@ -12,8 +12,10 @@ def create_embedding_layer(embed_type: str, ndim: int, hidden_size: int):
             nn.ReLU(),
             nn.Linear(mid_size, hidden_size),
         )
-        return torch.nn.Linear(ndim, hidden_size)
-        # return mlp  # replace 1 layer projection to 2 layers mlp
+        if not use_mlp:
+            return torch.nn.Linear(ndim, hidden_size)
+        else:
+            return mlp  # replace 1 layer projection to 2 layers mlp
     elif embed_type == "discrete":
         return nn.Embedding(ndim, hidden_size)
     else:

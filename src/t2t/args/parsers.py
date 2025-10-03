@@ -72,6 +72,12 @@ def parse_train_args_for_clevr(args):
         default='0',
         help="available patterns",
     )
+    parser.add_argument(
+        "--use_mlp",
+        type=bool,
+        default=False,
+        action="store_true",
+    )
 
     return _parse_args(parser, args)
 
