@@ -1,6 +1,6 @@
 # parameters
 time=$(date "+%Y%m%d_%H%M")
-pattern_a=0,1,2,3
+pattern_a=0,1,3
 
 # paths
 CONDA_ENV_PATH=/home/user/anaconda3/envs/kalm
