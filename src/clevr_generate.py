@@ -7,7 +7,7 @@ import transformers
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from typing import List, Optional, Callable, Tuple, Dict, Any
-from envs.utils.clevr_utils import DIRECTIONS_CNT, BEHIND, LEFT, FRONT, RIGHT, TAU_2, TAU_3, ORDER, SORT, color_list
+from envs.utils.clevr_utils import DIRECTIONS_CNT, BEHIND, LEFT, FRONT, RIGHT, TAU_2, TAU_3, ORDER, SORT, color_list, _success
 from t2t.models import LlataConfig
 from t2t.models import LlataForTrajectoryGeneration
 
@@ -30,6 +30,100 @@ dir_value_to_desc_list = {
     FRONT: ['in front of', 'front', 'to the front of'],
     RIGHT: ['to the right of', 'right', 'in right of'],
 }
+
+goal_src = 1
+goal_dst = 2
+gd_max_tau_len = 50
+
+
+def compute_dist(obs_arr: np.ndarray, goal_arr: np.ndarray) -> float:
+    reshaped_obs = obs_arr.reshape((num_obj, -1))
+    
+    goal_src_idx = np.where(goal_arr[:num_obj] == goal_src)[0].item()
+    goal_dst_idx = np.where(goal_arr[:num_obj] == goal_dst)[0].item()
+    
+    goal_src_xy = reshaped_obs[goal_src_idx]
+    goal_dst_xy = reshaped_obs[goal_dst_idx]
+    
+    dist = np.linalg.norm(goal_src_xy - goal_dst_xy).item()
+
+    return dist
+
+
+def compute_tau_reward_arr(tau_obs_arr: np.ndarray, tau_next_obs_arr: np.ndarray, goal_arr: np.ndarray, is_success: bool) -> np.ndarray:
+    success_reward = 100
+    dist_scale = 10
+    tau_reward_list = []
+    for step_idx in range(tau_obs_arr.shape[0]):
+        prev_dist = compute_dist(tau_obs_arr[step_idx], goal_arr)
+        curr_dist = compute_dist(tau_next_obs_arr[step_idx], goal_arr)
+        reward = (prev_dist - curr_dist) * dist_scale
+        tau_reward_list.append(reward)
+    # Hard code the reward of final step
+    if is_success:
+        # tau_reward_list[-1] = success_reward
+        tau_reward_list.append(success_reward)
+    else:
+        tau_reward_list.append(0.0)
+
+    tau_reward_arr = np.array(tau_reward_list).reshape(-1, 1)
+
+    return tau_reward_arr
+
+
+def compute_task_reward_arr(tau_obs_arr: np.ndarray, tau_next_obs_arr: np.ndarray, goal_arr: np.ndarray, is_success: bool) -> np.ndarray:
+    success_reward = 100
+    subgoal_reward = 10
+
+    dist = 0.13 * 2.5
+    order_target_diff_arr = np.array([dist, 0.0])
+    norm_order_target_diff_arr = order_target_diff_arr / np.linalg.norm(order_target_diff_arr)
+    order_max_error_angle = np.pi / 6
+    sort_cycle_r = dist
+
+    tau_reward_list = []
+    goal_indicate = int(goal_arr[num_obj])
+    curr_completed_goal_cnt = 0
+    for step_idx in range(tau_obs_arr.shape[0]):
+        curr_env_obs = tau_obs_arr[step_idx][:2 * num_obj]
+        prev_completed_goal_cnt = curr_completed_goal_cnt
+        if goal_indicate in [TAU_2, TAU_3]:
+            if int(goal_indicate) == TAU_2:
+                all_goal_arr = goal_arr[num_obj + 1: (num_obj + 1) * (2 + 1)].reshape(-1, num_obj + 1)
+            elif int(goal_indicate) == TAU_3:
+                all_goal_arr = goal_arr[num_obj + 1: (num_obj + 1) * (3 + 1)].reshape(-1, num_obj + 1)
+            else:
+                raise NotImplementedError
+            curr_completed_goal_cnt = np.sum([_success(num_obj, curr_env_obs.reshape(1, -1), single_goal_arr.reshape(1, -1)).item() for single_goal_arr in all_goal_arr])
+        elif goal_indicate == ORDER:
+            diff_arr = np.diff(curr_env_obs.reshape((num_obj, -1)), axis=0)
+            norm_diff_arr = diff_arr / np.linalg.norm(diff_arr, axis=1).reshape(-1, 1)
+            diff_dot_arr = np.dot(norm_diff_arr, norm_order_target_diff_arr)
+            completed_flag_arr = diff_dot_arr >= np.cos(order_max_error_angle)
+            curr_completed_goal_cnt = completed_flag_arr.sum()
+        elif goal_indicate == SORT:
+            obs_xy_arr = curr_env_obs.reshape((num_obj, -1))
+            cycle_center = obs_xy_arr[2]
+            dist_list = []
+            other_idx_list = [0, 1, 3, 4]
+            for other_idx in other_idx_list:
+                dist = np.linalg.norm(cycle_center - obs_xy_arr[other_idx])
+                dist_list.append(dist)
+            curr_completed_goal_cnt = (np.array(dist_list) < sort_cycle_r).sum()
+        else:
+            raise NotImplementedError
+        step_reward = subgoal_reward * (curr_completed_goal_cnt - prev_completed_goal_cnt)
+        tau_reward_list.append(step_reward)
+
+    if is_success:
+        # tau_reward_list[-1] = success_reward
+        tau_reward_list.append(success_reward)
+    else:
+        tau_reward_list.append(0.0)
+
+    tau_reward_arr = np.array(tau_reward_list).reshape(-1, 1)
+
+    return tau_reward_arr
 
 
 def default_terminal_fn(
@@ -122,6 +216,9 @@ def greedy_generate(
             "actions": init_actions,
             "observation_masks": observation_masks,
             "action_masks": action_masks,
+            "observation_labels": torch.zeros(size=init_observations.shape, dtype=init_observations.dtype),
+            "action_labels": torch.zeros(size=init_actions.shape, dtype=init_actions.dtype),
+            "pattern": torch.tensor([0 for _ in range(init_observations.shape[0])], dtype=torch.int32),
         }
 
         output = model_tg(**inputs, return_dict=True)
@@ -141,7 +238,7 @@ def greedy_generate(
             # NOTE: do not check the initial observation due to data's fault
             if obss_len > 1:
                 if level == 'step_level':
-                    terminals = terminal_fn(insts=instructions, observations=new_obs[:, 0].cpu().numpy(), level=level, hist_observations=init_observations.cpu().numpy(), actions=init_actions[:, -1].cpu().numpy())
+                    terminals = terminal_fn(insts=instructions, observations=new_obs[:, 0].cpu().numpy(), level='step_level_a', hist_observations=init_observations.cpu().numpy(), actions=init_actions[:, -1].cpu().numpy())
                 else:
                     terminals = terminal_fn(insts=instructions, observations=new_obs[:, 0].cpu().numpy(), level=level)
                 done, succ = terminals["done"], terminals["success"]
@@ -233,8 +330,8 @@ def get_args():
     parser.add_argument(
         "--level",
         type=str,
-        default="rephrase_level",
-        choices=['rephrase_level', 'easy_level', 'hard_level'],
+        # default="rephrase_level",
+        # choices=['rephrase_level', 'easy_level', 'hard_level'],
         help="The evaluation level.",
     )
 
@@ -257,11 +354,12 @@ def generate_one_level(args, model_tg: LlataForTrajectoryGeneration):
     goals = prompts_data["goals"]
 
     # Dataset preprocessing
+    llm_encoding_list = [tau_obs_arr[0, 2 * num_obj:] for tau_obs_arr in prompts_data["observations"]]
     prompts_data["observations"] = [tau_obs_arr[:1, :2 * num_obj] for tau_obs_arr in prompts_data["observations"]]
     if 'actions' in prompts_data.keys():
         prompts_data.pop("actions")
 
-    instructions = [f'Translate the textual instruction to state/action trajectory.\nInstruction: {inst[0]}\nTrajectory:' for inst in prompts_data["instructions"]]
+    instructions = prompts_data["instructions"]
     init_observations = torch.as_tensor(np.array(prompts_data["observations"])) \
         if "observations" in prompts_data \
         else None
@@ -272,6 +370,7 @@ def generate_one_level(args, model_tg: LlataForTrajectoryGeneration):
     # generate
     # NOTE: terminal function is set to CLEVR Robot environment termination function
     observations, actions, observation_masks, action_masks, dones, success = [], [], [], [], [], []
+    rewards = []
     for i in tqdm(range(0, len(instructions), args.batch_size)):
         generation = greedy_generate(
             model_tg=model_tg,
@@ -296,15 +395,42 @@ def generate_one_level(args, model_tg: LlataForTrajectoryGeneration):
         dones.extend(list(generation["dones"].cpu().numpy()))
         success.extend(list(generation["success"].cpu().numpy()))
 
+        for j in range(generation["observations"].cpu().numpy().shape[0]):
+            tau_len = np.sum(generation["observation_masks"].cpu().numpy()[j])
+            tau_len -= int(tau_len == gd_max_tau_len)
+            is_success = generation["success"].cpu().numpy()[j][tau_len]
+            tau_obs_arr = generation["observations"].cpu().numpy()[j][:tau_len]
+            tau_next_obs_arr = generation["observations"].cpu().numpy()[j][1 :tau_len + 1]
+            goal_arr = goals[i:i+args.batch_size][j]
+            if level == 'step_level':
+                tau_reward_arr = np.array([100 * is_success]).reshape(-1, 1)
+            elif level == 'tau_level':
+                tau_reward_arr = compute_tau_reward_arr(tau_obs_arr[:, :2 * num_obj], tau_next_obs_arr[:, :2 * num_obj], goal_arr, is_success)
+            elif level == 'task_level':
+                tau_reward_arr = compute_task_reward_arr(tau_obs_arr, tau_next_obs_arr, goal_arr, is_success)
+            else:
+                raise NotImplementedError
+            rewards.append(tau_reward_arr)
+
     # save
     if not os.path.exists(os.path.dirname(args.output_path)):
         os.makedirs(os.path.dirname(args.output_path))
+    
+    # append llm encoding
+    full_observations = []
+    for tau_idx in range(len(observations)):
+        tau_obs = observations[tau_idx]
+        tau_len = len(tau_obs)
+        llm_encoding = llm_encoding_list[tau_idx]
+        tau_llm_encoding = llm_encoding.reshape(1, -1).repeat(tau_len, axis=0)
+        full_tau_obs = np.c_[tau_obs, tau_llm_encoding]
+        full_observations.append(full_tau_obs)
     
     np.save(
         args.output_path,
         {
             "instructions": instructions,
-            "observations": observations,
+            "observations": full_observations,
             "actions": actions,
             "observation_masks": observation_masks,
             "action_masks": action_masks,
@@ -312,6 +438,7 @@ def generate_one_level(args, model_tg: LlataForTrajectoryGeneration):
             "success": success,
             "goals": goals,
             "number_of_objects": num_obj,
+            "rewards": rewards,
         }
     )
 
@@ -323,7 +450,7 @@ if __name__ == "__main__":
         'easy_level': 'step_level',
         'hard_level': 'task_level',
     }
-    args.level = transfer2old[args.level]
+    # args.level = transfer2old[args.level]
 
     transformers.set_seed(args.seed)
     # load tokenizer
@@ -338,6 +465,7 @@ if __name__ == "__main__":
         tokenizer.pad_token_id = args.pad_token_id
     # load model
     config = LlataConfig.from_pretrained(args.model_path, **config_kwargs)
+    config.use_mlp = False
     model_tg = LlataForTrajectoryGeneration.from_pretrained(
         args.model_path, config=config,
         device_map='auto',

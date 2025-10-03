@@ -3,6 +3,8 @@ import argparse
 import numpy as np
 import torch
 import transformers
+import pickle
+from datetime import datetime
 
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, AutoTokenizer
@@ -15,6 +17,7 @@ from metaworld.envs import ALL_V2_ENVIRONMENTS_GOAL_OBSERVABLE
 from meta_utils import MetaWrapper
 from meta_utils import rephrase_level_env_name_list, easy_level_env_name_list, hard_level_env_name_list, en2nl, TAU_LEN, num_tau
 from meta_utils import FakeEnv, obs_online2offline
+from meta_utils import offline_observation_dim, offline_action_dim, entity2index
 
 
 wrap_info = {
@@ -100,6 +103,9 @@ def greedy_generate(
             "actions": init_actions,
             "observation_masks": observation_masks,
             "action_masks": action_masks,
+            "observation_labels": torch.zeros(size=init_observations.shape, dtype=init_observations.dtype),
+            "action_labels": torch.zeros(size=init_actions.shape, dtype=init_actions.dtype),
+            "pattern": torch.tensor([0 for _ in range(init_observations.shape[0])], dtype=torch.int32),
         }
 
         output = model_tg(**inputs, return_dict=True)
@@ -198,7 +204,7 @@ def get_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=100,
+        default=8,
         help="The batch size.",
     )
     parser.add_argument(
@@ -224,6 +230,12 @@ def get_args():
         default="rephrase_level",
         choices=['rephrase_level', 'easy_level', 'hard_level'],
         help="The evaluation level.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="",
+        help="The path to save the generated trajectories.",
     )
 
     args = parser.parse_args()
@@ -275,6 +287,18 @@ def generate_one_env(args, env_name: str, model_tg: LlataForTrajectoryGeneration
         rewards.extend(list(generation["rewards"].cpu().numpy()))
         dones.extend(list(generation["dones"].cpu().numpy()))
         successes.extend(list(generation["successes"].cpu().numpy()))
+    
+    inst_encoding_dict = np.load(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'meta_instructions_encoding.npy'), allow_pickle=True).item()
+    inst_list = inst_encoding_dict[env_name]
+    full_observations = []
+    for tau_idx in range(len(observations)):
+        tau_obs = observations[tau_idx]
+        tau_len = len(tau_obs)
+        inst_encoding_idx = np.random.randint(low=0, high=len(inst_list))  # sample a inst uniformly
+        inst_encoding = inst_list[inst_encoding_idx].flatten()
+        tau_llm_encoding = inst_encoding.reshape(1, -1).repeat(tau_len, axis=0)
+        full_tau_obs = np.c_[tau_obs, tau_llm_encoding]
+        full_observations.append(full_tau_obs)
 
     # save
     if not os.path.exists(os.path.dirname(args.output_path)):
@@ -284,7 +308,7 @@ def generate_one_env(args, env_name: str, model_tg: LlataForTrajectoryGeneration
         args.output_path,
         {
             "instructions": instructions,
-            "observations": observations,
+            "observations": full_observations,
             "actions": actions,
             "observation_masks": observation_masks,
             "action_masks": action_masks,
@@ -293,6 +317,137 @@ def generate_one_env(args, env_name: str, model_tg: LlataForTrajectoryGeneration
             "successes": successes,
         }
     )
+
+
+def dataset_cleaning(dataset_dict: dict, env_name: str) -> dict:
+    wrap_info = {
+        'reward_shaping': True
+    }
+    env = ALL_V2_ENVIRONMENTS_GOAL_OBSERVABLE[env_name]()
+    # Customize env setting
+    env._freeze_rand_vec = False  # random reset
+    env.max_path_length = TAU_LEN  # Try to avoid returns of successful tau less than failed tau
+    env = MetaWrapper(env=env, wrap_info=wrap_info)
+    online_obs = env.reset()[0]
+    _, valid_index_list = obs_online2offline(env_name=env_name, online_obs=online_obs, return_valid_index_list=True)
+    gripper_state_low = np.array([-0.525, 0.348, -0.0525, -1.])
+    gripper_state_high = np.array([0.525, 1.025, 0.7, 1.])
+    action_space_low = env.action_space.low.copy()
+    action_space_high = env.action_space.high.copy()
+    valid_index_arr = np.concatenate(valid_index_list)
+    for tau_idx in range(len(dataset_dict['observations'])):
+        tau_obs = dataset_dict['observations'][tau_idx]
+        tau_action = dataset_dict['actions'][tau_idx]
+
+        new_tau_obs = np.zeros_like(tau_obs)
+        new_tau_obs[:, valid_index_arr] = tau_obs[:, valid_index_arr]
+
+        new_tau_obs[:, entity2index['gripper']] = np.clip(new_tau_obs[:, entity2index['gripper']], gripper_state_low, gripper_state_high)
+        new_tau_action = np.clip(tau_action, action_space_low, action_space_high)
+
+        assert tau_obs[..., 91:].shape[-1] == 768
+        new_tau_obs[..., 91:] = tau_obs[..., 91:]
+        assert not (new_tau_obs[..., 91:].min() == new_tau_obs[..., 91:].max() == 0.0)
+
+        dataset_dict['observations'][tau_idx] = new_tau_obs
+        dataset_dict['actions'][tau_idx] = new_tau_action
+    
+    return dataset_dict
+
+
+def dataset_gather_generated_given_ds_type(ckpt: int, ds_type: str, do_clean: bool = False):
+    key_needed_to_append = [
+        'actions',
+        'observations',
+        'rewards',
+        'terminals',
+        'successes',
+        'instructions',
+    ]
+    total_dataset_dict = {
+        'num_trajectories': 0,
+        'observation_type': 'continuous',
+        'observation_dim': offline_observation_dim,
+        'action_type': 'continuous',
+        'action_dim': offline_action_dim,
+        'env_names': [],
+        'inst_idxes': [],
+        'masks': [],
+    }
+    for key in key_needed_to_append:
+        total_dataset_dict[key] = []
+
+    if ds_type == 'rephrase_level':
+        env_name_list = rephrase_level_env_name_list.copy()
+    elif ds_type == 'easy_level':
+        env_name_list = easy_level_env_name_list.copy()
+    elif ds_type == 'hard_level':
+        env_name_list = hard_level_env_name_list.copy()
+    else:
+        raise NotImplementedError
+
+    for env_name in env_name_list:
+        env_prefix = env_name[:env_name.find('-v2')]
+        dataset_dict = np.load(os.path.join(args.output_dir, f'meta_{env_prefix.replace("-", "_")}.npy'), allow_pickle=True).item()
+        obs_offline = []
+        assert len(dataset_dict['observations']) == num_tau
+        for tau_idx in range(len(dataset_dict['observations'])):
+            tau_len = dataset_dict['observation_masks'][tau_idx].sum()
+            offline_tau_obs_arr = dataset_dict['observations'][tau_idx][:tau_len]
+            obs_offline.append(offline_tau_obs_arr)
+
+            inst_with_prompt = dataset_dict['instructions'][tau_idx]
+            start_prompt = '\nInstruction: '
+            end_prompt = '\nTrajectory:'
+            inst = inst_with_prompt[inst_with_prompt.find(start_prompt) + len(start_prompt): inst_with_prompt.find(end_prompt)]
+            inst_idx = en2nl[env_name].index(inst)
+            mask = np.zeros((TAU_LEN, 1))
+            mask[:tau_len] = 1.0
+
+            total_dataset_dict['env_names'].append(env_name)
+            total_dataset_dict['inst_idxes'].append(inst_idx)
+            total_dataset_dict['masks'].append(mask)
+        dataset_dict['observations'] = obs_offline
+
+        if do_clean:
+            dataset_dict = dataset_cleaning(dataset_dict=dataset_dict, env_name=env_name)
+
+        # append env-level dataset
+        total_dataset_dict['num_trajectories'] += num_tau
+        for key in key_needed_to_append:
+            total_dataset_dict[key].extend(dataset_dict[key])
+
+    key_needed_to_pad = [
+        'actions',
+        'observations',
+        'rewards',
+        'terminals',
+        'successes',
+    ]
+    for key in key_needed_to_pad:
+        if key == 'actions':
+            key_dim = offline_action_dim
+        elif key == 'observations':
+            key_dim = offline_observation_dim + 768
+        else:
+            key_dim = 1
+        value_with_pad = np.empty((len(total_dataset_dict[key]), TAU_LEN, key_dim))
+        for item_idx, item in enumerate(total_dataset_dict[key]):
+            tau_len = len(item)
+            if key_dim == 1:
+                value_with_pad[item_idx][:tau_len] = item.reshape(-1, 1).copy()
+            else:
+                value_with_pad[item_idx][:tau_len] = item.copy()
+        total_dataset_dict[key] = value_with_pad
+
+    current_datetime = datetime.now()
+    data_save_path = os.path.join(args.output_dir, f'meta_{ds_type}_{current_datetime.strftime("%Y%m%d")}.npy')
+
+    # np.save(data_save_path, total_dataset_dict, allow_pickle=True)
+    with open(data_save_path, 'wb') as f:
+        pickle.dump(total_dataset_dict, f)
+
+    print(f'Finish dataset gathering!')
 
 
 if __name__ == "__main__":
@@ -329,7 +484,11 @@ if __name__ == "__main__":
     
     for env_name in env_name_list:
         env_prefix = env_name[:env_name.find('-v2')]
+        save_path = f'meta_{env_prefix.replace("-", "_")}'
+        args.output_path = os.path.join(args.output_dir, f'{save_path}.npy')
         args.max_trajectory_length = TAU_LEN
         args.early_stopping = True
         print("===> arguments:", args)
         generate_one_env(args, env_name=env_name, model_tg=model_tg)
+    
+    dataset_gather_generated_given_ds_type(None, args.level, do_clean=True)
